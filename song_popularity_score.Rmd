@@ -1,0 +1,839 @@
+---
+title: "Project Data Cleaning"
+output: html_document
+date: '2022-10-01'
+---
+
+
+```{r}
+require(tidyverse)
+require(ggplot2)
+require(scales)
+require(randomForest)
+require(rpart)
+require(rpart.plot)
+require(factoextra)
+require(corrplot)
+require(ggiraphExtra)
+require(jtools)
+require(cowplot)
+require(glmnet)
+
+allSongs <- read.csv("Songs Data.csv")
+songInfo <- read.csv("song_info.csv")
+
+```
+
+---
+Cleaning the data to remove duplicates
+---
+
+```{r}
+########### Check for total number of unique songs
+length(unique(allSongs$Song))
+
+########### Remove all duplicate songs
+UniqueSongs <- allSongs %>%
+  distinct(Song, .keep_all = TRUE)
+
+########### Remove column I created for song length in seconds
+UniqueSongs <- UniqueSongs %>% 
+  select(!Song_Duration.Sec.)
+
+########### Change song length from milliseconds to seconds and remove milliseconds and time signature columns
+UniqueSongs <- UniqueSongs %>% 
+  mutate(Length_Sec = song_duration_ms / 1000) %>% 
+  select(!c(song_duration_ms, Time_Signature))
+ 
+########### Check for duplicates in clean data
+length(unique(UniqueSongs$Song))
+sum(duplicated(UniqueSongs$Song))
+
+# Check for NAs -- No NAs
+colSums(is.na(UniqueSongs))
+
+```
+
+
+```{r}
+######################### SONG INFO
+songInfo
+
+```
+
+---
+Assigning genres to the songs based on playlist
+---
+```{r}
+######################### JOIN THE TABLES
+songInfo <- songInfo %>% 
+  rename(Song = song_name)
+
+
+completeTable <- UniqueSongs %>% 
+  inner_join(songInfo, by = "Song")
+
+##### Assign genres to the songs based on the playlists the songs came from
+completeTable$Genre <- case_when(
+                                grepl("Alternative", completeTable$playlist) ~ "Alternative",
+                                grepl("Rock", completeTable$playlist) ~ "Rock",
+                                grepl("Hip Hop", completeTable$playlist) |
+                                  grepl("Hip-Hop", completeTable$playlist) ~ "Hip Hop",
+                                grepl("Pop", completeTable$playlist) ~ "Pop",
+                                grepl("Country", completeTable$playlist) ~ "Country",
+                                grepl("Latin", completeTable$playlist) | 
+                                  grepl("Abuela", completeTable$playlist) ~ "Latin"
+                                )
+
+########### Remove all duplicate songs
+completeTable <- completeTable %>%
+  distinct(Song, .keep_all = TRUE)
+
+completeTable %>% 
+  group_by(Genre) %>% 
+  count()
+
+data <- completeTable %>% 
+  drop_na() 
+
+data <- data %>%
+  distinct(Song, .keep_all = TRUE) 
+
+aggregate(data$Song, list(data$Genre), FUN=length)
+
+```
+
+
+---
+Separating the data into genres
+---
+```{r}
+######## Creating subsets by Genre
+
+
+### Alternative
+AlternativeData <- data %>%
+  filter(Genre == "Alternative") %>% 
+  select(!c(Song, artist_name, album_names, playlist, Genre))
+
+### Country
+CountryData <- data %>%
+  filter(Genre == "Country") %>% 
+  select(!c(Song, artist_name, album_names, playlist, Genre))
+
+### Hip_Hop
+Hip_HopData <- data %>%
+  filter(Genre == "Hip Hop") %>% 
+  select(!c(Song, artist_name, album_names, playlist, Genre))
+
+### Latin
+LatinData <- data %>%
+  filter(Genre == "Latin") %>% 
+  select(!c(Song, artist_name, album_names, playlist, Genre))
+
+### Pop
+PopData <- data %>%
+  filter(Genre == "Pop") %>% 
+  select(!c(Song, artist_name, album_names, playlist, Genre))
+
+### Rock
+RockData <- data %>%
+  filter(Genre == "Rock") %>% 
+  select(!c(Song, artist_name, album_names, playlist, Genre))
+
+```
+
+
+
+---
+Exploratory Data Analysis
+---
+
+```{r}
+
+##########################################  
+# Subseting the data for Visualizations
+##########################################
+corr_data = subset(data, select = -c(Song, artist_name, album_names, playlist))
+
+genre_list = unique(corr_data$Genre)
+genre_list
+
+length(genre_list)
+
+########################################
+# Here, we are showing the correlations between each song attribute, seperated by Genre
+########################################
+
+par(mfrow=c(2,3))
+
+for (g in genre_list)
+  {
+ corrplot(cor( subset(corr_data[corr_data$Genre == g,], select = -c(Genre)) ),
+         method = 'square',
+         addCoef.col = 1,
+         number.cex = 0.5,
+         tl.cex = 0.5,
+         title = g,
+         mar=c(0,0,1,0)) 
+}
+
+########################################
+#These plots show the density distributions of Danceability, Energy and Popularity for all songs across all genres
+########################################
+
+{
+####### Density of danceabilty for all genres
+plot1 <- ggplot(corr_data, aes(x=Danceability)) + 
+  geom_histogram(aes(y=..density..), color="black", fill="white", bins = 50)+
+  geom_density(alpha=.2, fill="red") +
+  labs(title = "Danceability Densities For All Genres")
+
+####### Density of Energy for all genres
+plot2 <- ggplot(corr_data, aes(x=Energy)) + 
+  geom_histogram(aes(y=..density..), color="black", fill="white", bins = 50)+
+  geom_density(alpha=.2, fill="yellow") +
+  labs(title = "Energy Densities For All Genres")
+
+####### Density of Popularity for all genres
+plot3 <- ggplot(corr_data, aes(x=Popularity)) + 
+  geom_histogram(aes(y=..density..), color="black", fill="white", bins = 50)+
+  geom_density(alpha=.2, fill="green") +
+  labs(title = "Popularity Densities For All Genres")
+
+
+plot_grid(plot1, plot2, plot3, labels = "AUTO")
+}
+
+
+######################################## 
+# Here we have the distributions of danceability and energy scores in boxplots, seperated by Genre
+########################################
+
+{
+####### Boxplot for energy distributions by genre
+box1 <- ggplot(corr_data, aes(x=Genre,y=Energy, fill=Genre)) +
+  geom_boxplot() +
+  labs(title = "Energy Scores by Genre") +
+  theme(legend.position="none")
+
+
+####### Boxplot for danceability distributions by genre
+box2 <- ggplot(corr_data, aes(x=Genre,y=Danceability, fill = Genre)) +
+  geom_boxplot() +
+  labs(title = "Danceability Scores by Genre") +
+  theme(legend.position="none")
+
+plot_grid(box1, box2, labels = "AUTO")
+}
+
+
+```
+
+
+---
+LASSO
+Here, we use Lasso to help us determine whatvariabeshave the greatest contribution to the model of predicting Popularity 
+
+We find that the top two most impactful variables for predicting Popularity among all the songs in all genres are Danceability and Energy
+---
+
+```{r}
+#### All Genres Lasso to find most important Variables
+set.seed(1)
+x = model.matrix(Popularity ~ ., data=corr_data)[,-1]
+y = corr_data$Popularity
+cv.model = cv.glmnet(x, y, alpha=1)
+optimal_lambda = cv.model$lambda.min
+optimal_lambda
+plot(cv.model)
+lasso <- glmnet(x, y)
+summary(lasso)
+best_model <- glmnet(x, y, alpha= 1, lambda = optimal_lambda)
+ResultMatrix <- c(abs(matrix(best_model$beta)))
+Names <- colnames(x)
+TopVariables <- data_frame(Names,ResultMatrix) %>% 
+  arrange(desc(ResultMatrix)) %>% 
+  filter(!grepl("Genre", Names)) %>% 
+  top_n(2)
+TopVariables
+
+```
+
+
+
+
+---
+-These are the linear models of each genre that regress Popularity on all variables
+-We have chosen to regress Popularity on all variables for every genre to maintain consistency, which explains why some genres do not show high significance for Energy and Danceability until less significant variables are ommitted
+-This helps us confirm our results from Lasso: Energy and Danceability are the variabes that have the greatest contribution to the model of predicting Popularity 
+-When comparing genres, we can see that there is a difference in importance of Energy/Danceability in predicting Popularity
+-We can also see that there is significant variance in Popularity for songs with the same or very similar Energy/Danceability
+---
+```{r}
+#############
+# Alternative
+#############
+AlternativeModel <- lm(Popularity ~ .,data = AlternativeData)
+summary(AlternativeModel)
+
+effect_plot(AlternativeModel, pred = Energy, interval = TRUE, plot.points = TRUE, jitter = 0.05) +
+  labs(title = "Energy vs. Popularity for Alternative Music")
+effect_plot(AlternativeModel, pred = Danceability, interval = TRUE, plot.points = TRUE, jitter = 0.05) + 
+  labs(title = "Danceability vs. Popularity for Alternative Music")
+
+
+#############
+# Country
+#############
+CountryModel <- lm(Popularity ~ .,data = CountryData)
+summary(CountryModel)
+
+### This plot shows the effect of chosen regressor (pred) on Popularity
+effect_plot(CountryModel, pred = Energy, interval = TRUE, plot.points = TRUE, jitter = 0.05) +
+  labs(title = "Energy vs. Popularity for Country Music")
+effect_plot(CountryModel, pred = Danceability, interval = TRUE, plot.points = TRUE, jitter = 0.05) +
+  labs(title = "Danceability vs. Popularity for Country Music")
+
+
+#############
+# Hip Hop
+#############
+HipHopModel <- lm(Popularity ~ .,data = Hip_HopData)
+summary(HipHopModel)
+
+### This plot shows the effect of chosen regressor (pred) on Popularity
+effect_plot(HipHopModel, pred = Energy, interval = TRUE, plot.points = TRUE, jitter = 0.05) +
+  labs(title = "Energy vs. Popularity for Hip Hop Music")
+effect_plot(HipHopModel, pred = Danceability, interval = TRUE, plot.points = TRUE, jitter = 0.05) +
+  labs(title = "Danceability vs. Popularity for Hip Hop Music")
+
+
+#############
+# Latin
+#############
+LatinModel <- lm(Popularity ~ .,data = LatinData)
+summary(LatinModel)
+
+### This plot shows the effect of chosen regressor (pred) on Popularity
+effect_plot(LatinModel, pred = Energy, interval = TRUE, plot.points = TRUE, jitter = 0.05) +
+  labs(title = "Energy vs. Popularity for Latin Music")
+effect_plot(LatinModel, pred = Danceability, interval = TRUE, plot.points = TRUE, jitter = 0.05) +
+  labs(title = "Danceability vs. Popularity for Latin Music")
+
+
+#############
+# Pop
+#############
+PopModel <- lm(Popularity ~ .,data = PopData)
+summary(PopModel)
+
+### This plot shows the effect of chosen regressor (pred) on Popularity
+effect_plot(PopModel, pred = Energy, interval = TRUE, plot.points = TRUE, jitter = 0.05) +
+  labs(title = "Energy vs. Popularity for Pop Music")
+effect_plot(PopModel, pred = Danceability, interval = TRUE, plot.points = TRUE, jitter = 0.05) +
+  labs(title = "Danceability vs. Popularity for Pop Music")
+
+
+#############
+# Rock
+#############
+RockModel <- lm(Popularity ~ .,data = RockData)
+summary(RockModel)
+
+### This plot shows the effect of chosen regressor (pred) on Popularity
+effect_plot(RockModel, pred = Energy, interval = TRUE, plot.points = TRUE, jitter = 0.05) +
+  labs(title = "Energy vs. Popularity for Rock Music")
+effect_plot(RockModel, pred = Danceability, interval = TRUE, plot.points = TRUE, jitter = 0.05) +
+  labs(title = "Danceability vs. Popularity for Rock Music")
+
+
+```
+
+
+---
+Regressions to find if changing Danceability/Energy has a significant impact on changing Popularity
+Using Double Selection Procedure for Robust confidence Intervals
+
+---
+
+```{r}
+
+{
+####################################
+# DANCEABILITY EFFECT ON ALTERNATIVE
+####################################
+
+### Step 1
+set.seed(1)
+x = model.matrix(Popularity ~ ., data=AlternativeData)[,c(-1,-3)]
+y = AlternativeData$Popularity
+cv.model = cv.glmnet(x, y, alpha=1)
+optimal_lambda = cv.model$lambda.min
+optimal_lambda
+plot(cv.model)
+lasso <- glmnet(x, y)
+summary(lasso)
+best_model <- glmnet(x, y, alpha= 1, lambda = optimal_lambda)
+best_model$beta
+## None insignificant
+
+
+#### Step 2
+set.seed(1)
+x = model.matrix(Danceability ~ ., data=AlternativeData)[,c(-1,-2)]
+y = AlternativeData$Danceability
+cv.model = cv.glmnet(x, y, alpha=1)
+optimal_lambda = cv.model$lambda.min
+optimal_lambda
+plot(cv.model)
+lasso <- glmnet(x, y)
+summary(lasso)
+best_model <- glmnet(x, y, alpha= 1, lambda = optimal_lambda)
+best_model$beta
+# None insignificant
+
+### Step 3
+summary(AltModel <- lm(Popularity ~ Danceability + ., AlternativeData))
+## p-value is greater than 0.05, so we can conclude that increasing danceability will not have a significant effect on popularity for Alternative Music
+
+####################################
+# ENERGY EFFECT ON ALTERNATIVE
+####################################
+
+### Step 1
+set.seed(1)
+x = model.matrix(Popularity ~ ., data=AlternativeData)[,c(-1,-4)]
+y = AlternativeData$Popularity
+cv.model = cv.glmnet(x, y, alpha=1)
+optimal_lambda = cv.model$lambda.min
+optimal_lambda
+plot(cv.model)
+lasso <- glmnet(x, y)
+summary(lasso)
+best_model <- glmnet(x, y, alpha= 1, lambda = optimal_lambda)
+best_model$beta
+## Acousticness, Instrumentalness, Tempo
+
+#### Step 2
+set.seed(1)
+x = model.matrix(Energy ~ ., data=AlternativeData)[,c(-1,-2)]
+y = AlternativeData$Energy
+cv.model = cv.glmnet(x, y, alpha=1)
+optimal_lambda = cv.model$lambda.min
+optimal_lambda
+plot(cv.model)
+lasso <- glmnet(x, y)
+summary(lasso)
+best_model <- glmnet(x, y, alpha= 1, lambda = optimal_lambda)
+best_model$beta
+# Audio_Mode
+
+### Step 3
+summary(AltModel <- lm(Popularity ~ Energy + ., AlternativeData))
+## p-value is less than 0.05, so we can conclude that changing Energy DOES in fact have a significant
+## impact on popularity for Alternative Music
+
+####################################
+# DANCEABILITY EFFECT ON COUNTRY
+####################################
+
+### Step 1
+set.seed(1)
+x = model.matrix(Popularity ~ ., data=CountryData)[,c(-1,-3)]
+y = CountryData$Popularity
+cv.model = cv.glmnet(x, y, alpha=1)
+optimal_lambda = cv.model$lambda.min
+optimal_lambda
+plot(cv.model)
+lasso <- glmnet(x, y)
+summary(lasso)
+best_model <- glmnet(x, y, alpha= 1, lambda = optimal_lambda)
+best_model$beta
+# Liveness
+
+### Step 2
+set.seed(1)
+x = model.matrix(Danceability ~ ., data=CountryData)[,c(-1,-2)]
+y = CountryData$Danceability
+cv.model = cv.glmnet(x, y, alpha=1)
+optimal_lambda = cv.model$lambda.min
+optimal_lambda
+plot(cv.model)
+lasso <- glmnet(x, y)
+summary(lasso)
+best_model <- glmnet(x, y, alpha= 1, lambda = optimal_lambda)
+best_model$beta
+# Key
+
+### Step 3
+model_step_3 = glm(Popularity ~ . , data = CountryData)
+summary(model_step_3)
+## p-value is greater than 0.05, so we can conclude that changing Danceability does not have a significant impact on popularity for Country Music
+
+
+
+####################################
+# ENERGY EFFECT ON COUNTRY
+####################################
+
+### Step 1
+set.seed(1)
+x = model.matrix(Popularity ~ ., data=CountryData)[,c(-1,-4)]
+y = CountryData$Popularity
+cv.model = cv.glmnet(x, y, alpha=1)
+optimal_lambda = cv.model$lambda.min
+optimal_lambda
+plot(cv.model)
+lasso <- glmnet(x, y)
+summary(lasso)
+best_model <- glmnet(x, y, alpha= 1, lambda = optimal_lambda)
+best_model$beta
+# None
+
+### Step 2
+set.seed(1)
+x = model.matrix(Energy ~ ., data=CountryData)[,c(-1,-2)]
+y = CountryData$Energy
+cv.model = cv.glmnet(x, y, alpha=1)
+optimal_lambda = cv.model$lambda.min
+optimal_lambda
+plot(cv.model)
+lasso <- glmnet(x, y)
+summary(lasso)
+best_model <- glmnet(x, y, alpha= 1, lambda = optimal_lambda)
+best_model$beta
+# None
+
+### Step 3
+model_step_3 = glm(Popularity ~ . , data = CountryData)
+summary(model_step_3)
+## p-value is less than 0.05, so we can conclude that changing Energy DOES in fact have a significant impact on popularity for Country Music
+
+####################################
+# DANCEABILITY EFFECT ON HIP HOP
+####################################
+
+### Step 1
+set.seed(1)
+x = model.matrix(Popularity ~ ., data=Hip_HopData)[,c(-1,-3)]
+y = Hip_HopData$Popularity
+cv.model = cv.glmnet(x, y, alpha=1)
+optimal_lambda = cv.model$lambda.min
+optimal_lambda
+plot(cv.model)
+lasso <- glmnet(x, y)
+summary(lasso)
+best_model <- glmnet(x, y, alpha= 1, lambda = optimal_lambda)
+best_model$beta
+
+# Instrumentalness, Key, Liveness Speechiness, Valence 
+
+#### Step 2
+set.seed(1)
+x = model.matrix(Danceability ~ ., data=Hip_HopData)[,c(-1,-2)]
+y = Hip_HopData$Danceability
+cv.model = cv.glmnet(x, y, alpha=1)
+optimal_lambda = cv.model$lambda.min
+optimal_lambda
+plot(cv.model)
+lasso <- glmnet(x, y)
+summary(lasso)
+best_model <- glmnet(x, y, alpha= 1, lambda = optimal_lambda)
+best_model$beta
+# None
+
+
+### Step 3
+model_3 <- lm(Popularity ~., data = Hip_HopData)
+summary(model_3)
+## p-value is less than 0.05, so we can conclude that increasing Danceability could have a significant effect on popularity Hip Hop
+
+
+####################################
+# ENERGY EFFECT ON HIP HOP
+####################################
+
+### Step 1
+set.seed(1)
+x = model.matrix(Popularity ~ ., data=Hip_HopData)[,c(-1,-4)]
+y = Hip_HopData$Popularity
+cv.model = cv.glmnet(x, y, alpha=1)
+optimal_lambda = cv.model$lambda.min
+optimal_lambda
+plot(cv.model)
+lasso <- glmnet(x, y)
+summary(lasso)
+best_model <- glmnet(x, y, alpha= 1, lambda = optimal_lambda)
+best_model$beta
+
+## All except Acousticness, Danceability and Tempo
+
+#### Step 2
+set.seed(1)
+x = model.matrix(Energy ~ ., data=Hip_HopData)[,c(-1,-2)]
+y = Hip_HopData$Energy
+cv.model = cv.glmnet(x, y, alpha=1)
+optimal_lambda = cv.model$lambda.min
+optimal_lambda
+plot(cv.model)
+lasso <- glmnet(x, y)
+summary(lasso)
+best_model <- glmnet(x, y, alpha= 1, lambda = optimal_lambda)
+best_model$beta
+
+# Speechiness, Tempo 
+
+
+### Step 3
+model_4 <- lm(Popularity ~ .-Speechiness, data = Hip_HopData)
+summary(model_4)
+# The p-value on the treatment, Energy, is very significant, it's less than 0.05. We can conclude that changing Energy will have a significant impact on Popularity
+
+
+####################################
+# DANCEABILITY EFFECT ON LATIN
+####################################
+
+### Step 1
+set.seed(1)
+x = model.matrix(Popularity ~ ., data=LatinData)[,c(-1,-3)]
+y = LatinData$Popularity
+cv.model = cv.glmnet(x, y, alpha=1)
+optimal_lambda = cv.model$lambda.min
+optimal_lambda
+plot(cv.model)
+lasso <- glmnet(x, y)
+summary(lasso)
+best_model <- glmnet(x, y, alpha= 1, lambda = optimal_lambda)
+best_model$beta
+## Energy, Liveness, Valence, Length
+
+
+#### Step 2
+set.seed(1)
+x = model.matrix(Danceability ~ ., data=LatinData)[,c(-1,-2)]
+y = LatinData$Danceability
+cv.model = cv.glmnet(x, y, alpha=1)
+optimal_lambda = cv.model$lambda.min
+optimal_lambda
+plot(cv.model)
+lasso <- glmnet(x, y)
+summary(lasso)
+best_model <- glmnet(x, y, alpha= 1, lambda = optimal_lambda)
+best_model$beta
+# None 
+
+### Step 3
+summary(LatinModel <- lm(Popularity ~ Danceability + ., LatinData))
+## p-value is greater than 0.05, so we can conclude that increasing danceability will not have a significant effect on popularity for Latin Music
+
+
+####################################
+# ENERGY EFFECT ON LATIN
+####################################
+
+### Step 1
+set.seed(1)
+x = model.matrix(Popularity ~ ., data=LatinData)[,c(-1,-4)]
+y = LatinData$Popularity
+cv.model = cv.glmnet(x, y, alpha=1)
+optimal_lambda = cv.model$lambda.min
+optimal_lambda
+plot(cv.model)
+lasso <- glmnet(x, y)
+summary(lasso)
+best_model <- glmnet(x, y, alpha= 1, lambda = optimal_lambda)
+best_model$beta
+## Liveness, Valence, Length
+
+
+#### Step 2
+set.seed(1)
+x = model.matrix(Energy ~ ., data=LatinData)[,c(-1,-2)]
+y = LatinData$Energy
+cv.model = cv.glmnet(x, y, alpha=1)
+optimal_lambda = cv.model$lambda.min
+optimal_lambda
+plot(cv.model)
+lasso <- glmnet(x, y)
+summary(lasso)
+best_model <- glmnet(x, y, alpha= 1, lambda = optimal_lambda)
+best_model$beta
+# Key
+
+### Step 3
+summary(LatinModel <- lm(Popularity ~ Energy + ., LatinData))
+## p-value is less than 0.05, so we can conclude that changing Energy DOES in fact have a significant impact on popularity for Latin
+
+
+
+####################################
+# DANCEABILITY EFFECT ON POP
+####################################
+
+### Step 1
+set.seed(1)
+x = model.matrix(Popularity ~ ., data=PopData)[,c(-1,-3)]
+y = PopData$Popularity
+cv.model = cv.glmnet(x, y, alpha=1)
+optimal_lambda = cv.model$lambda.min
+optimal_lambda
+plot(cv.model)
+lasso <- glmnet(x, y)
+summary(lasso)
+best_model <- glmnet(x, y, alpha= 1, lambda = optimal_lambda)
+best_model$beta
+# Key, Liveness, Loudness, Tempo, Audio_Valence
+
+### Step 2
+set.seed(1)
+x = model.matrix(Danceability ~ ., data=PopData)[,c(-1,-2)]
+y = PopData$Danceability
+cv.model = cv.glmnet(x, y, alpha=1)
+optimal_lambda = cv.model$lambda.min
+optimal_lambda
+plot(cv.model)
+lasso <- glmnet(x, y)
+summary(lasso)
+best_model <- glmnet(x, y, alpha= 1, lambda = optimal_lambda)
+best_model$beta
+# None
+
+### Step 3
+model_step_3 = glm(Popularity ~ ., data = PopData)
+summary(model_step_3)
+## p-value is less than 0.05, so we can conclude that changing Danceability DOES in fact have a significant impact on popularity for Pop
+
+
+
+####################################
+# ENERGY EFFECT ON POP
+####################################
+
+### Step 1  
+set.seed(1)
+x = model.matrix(Popularity ~ ., data=PopData)[,c(-1,-4)]
+y = PopData$Popularity
+cv.model = cv.glmnet(x, y, alpha=1)
+optimal_lambda = cv.model$lambda.min
+optimal_lambda
+plot(cv.model)
+lasso <- glmnet(x, y)
+summary(lasso)
+best_model <- glmnet(x, y, alpha= 1, lambda = optimal_lambda)
+best_model$beta
+# Key, Liveness, Loudness, Tempo
+
+### Step 2
+set.seed(1)
+x = model.matrix(Energy ~ ., data=PopData)[,c(-1,-2)]
+y = PopData$Energy
+cv.model = cv.glmnet(x, y, alpha=1)
+optimal_lambda = cv.model$lambda.min
+optimal_lambda
+plot(cv.model)
+lasso <- glmnet(x, y)
+summary(lasso)
+best_model <- glmnet(x, y, alpha= 1, lambda = optimal_lambda)
+best_model$beta
+# Key
+
+### Step 3
+model_step_3 = glm(Popularity ~ .-Key, data = PopData)
+summary(model_step_3)
+## p-value is greater than 0.05, so we can conclude that increasing Energy will not have a significant effect on popularity for Pop Music
+
+
+####################################
+# DANCEABILITY EFFECT ON ROCK
+####################################
+
+### Step 1
+set.seed(1)
+x = model.matrix(Popularity ~ ., data=RockData)[,c(-1,-3)]
+y = RockData$Popularity
+cv.model = cv.glmnet(x, y, alpha=1)
+optimal_lambda = cv.model$lambda.min
+optimal_lambda
+plot(cv.model)
+lasso <- glmnet(x, y)
+summary(lasso)
+best_model <- glmnet(x, y, alpha= 1, lambda = optimal_lambda)
+best_model$beta
+## Energy, Key, Liveness, Audio, Speechiness, Valence
+
+### Step 2
+set.seed(1)
+x = model.matrix(Danceability ~ ., data=RockData)[,c(-1,-2)]
+y = RockData$Danceability
+cv.model = cv.glmnet(x, y, alpha=1)
+optimal_lambda = cv.model$lambda.min
+optimal_lambda
+plot(cv.model)
+lasso <- glmnet(x, y)
+summary(lasso)
+best_model <- glmnet(x, y, alpha= 1, lambda = optimal_lambda)
+best_model$beta
+# None
+
+### Step 3
+summary(RockModel <- lm(Popularity ~ ., RockData))
+## p-value is greater than 0.05, so we can conclude that increasing Danceability will not have a significant effect on popularity for Rock Music
+
+
+
+####################################
+# ENERGY EFFECT ON ROCK
+####################################
+
+### Step 1
+set.seed(1)
+x = model.matrix(Popularity ~ ., data=RockData)[,c(-1,-4)]
+y = RockData$Popularity
+cv.model = cv.glmnet(x, y, alpha=1)
+optimal_lambda = cv.model$lambda.min
+optimal_lambda
+plot(cv.model)
+lasso <- glmnet(x, y)
+summary(lasso)
+best_model <- glmnet(x, y, alpha= 1, lambda = optimal_lambda)
+best_model$beta
+# Danceability, Key, Liveness, Mode, Speechiness, Valence
+
+### Step 2
+set.seed(1)
+x = model.matrix(Energy ~ ., data=RockData)[,c(-1,-2)]
+y = RockData$Energy
+cv.model = cv.glmnet(x, y, alpha=1)
+optimal_lambda = cv.model$lambda.min
+optimal_lambda
+plot(cv.model)
+lasso <- glmnet(x, y)
+summary(lasso)
+best_model <- glmnet(x, y, alpha= 1, lambda = optimal_lambda)
+best_model$beta
+# Key
+
+### Step 3
+summary(AltModel <- lm(Popularity ~ .-Key, RockData))
+## p-value is greater than 0.05, so we can conclude that increasing Energy will not have a significant effect on popularity for Rock Music
+}
+
+```
+
+---
+Putting the results of Double Selection in a table
+Our table tells us, for each genre, if changing the variable will have a significant effect on Popularity
+---
+```{r}
+# In this table,"Yes" means that changing the attribute will have an effect on Popularity for that genre. "No" means that changing the attribute has a low significance in affecting Popularity.
+Genre <- c("Alternative", "Country", "Hip Hop", "Latin", "Pop", "Rock")
+Danceability <- c("No", "No", "Yes", "No", "Yes", "No")
+Energy <- c("Yes", "Yes", "Yes", "Yes", "No", "No")
+
+Results <- as.data.frame(cbind(Genre, Danceability, Energy))
+Results
+
+```
+
